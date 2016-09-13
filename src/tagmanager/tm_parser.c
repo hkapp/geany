@@ -488,6 +488,15 @@ static TMParserMapEntry map_POWERSHELL[] = {
 	{'v', tm_tag_variable_t},
 };
 
+static TMParserMapEntry map_SCALA[] = {
+	{'c', tm_tag_class_t},
+	{'f', tm_tag_field_t},
+	{'t', tm_tag_interface_t},
+	{'m', tm_tag_method_t},
+	{'o', tm_tag_struct_t},
+	{'p', tm_tag_package_t},
+	{'T', tm_tag_typedef_t},
+};
 
 typedef struct
 {
@@ -550,6 +559,7 @@ static TMParserMap parser_map[] = {
 	MAP_ENTRY(JSON),
 	MAP_ENTRY(ZEPHIR),
 	MAP_ENTRY(POWERSHELL),
+	MAP_ENTRY(SCALA),
 };
 /* make sure the parser map is consistent and complete */
 G_STATIC_ASSERT(G_N_ELEMENTS(parser_map) == TM_PARSER_COUNT);

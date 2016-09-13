@@ -50,7 +50,8 @@ parsers = \
 	parsers/tcl.c \
 	parsers/txt2tags.c \
 	parsers/verilog.c \
-	parsers/vhdl.c
+	parsers/vhdl.c \
+	parsers/scala.c
 
 libctags_la_SOURCES = \
 	main/args.c \

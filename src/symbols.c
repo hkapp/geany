@@ -716,6 +716,20 @@ static void add_top_level_items(GeanyDocument *doc)
 				NULL);
 			break;
 		}
+		case GEANY_FILETYPES_SCALA:
+		{
+			tag_list_add_groups(tag_store,
+				&(tv_iters.tag_namespace), _("Package"), ICON_NAMESPACE,
+				&(tv_iters.tag_interface), _("Traits"), ICON_STRUCT,
+				&(tv_iters.tag_class), _("Classes"), ICON_CLASS,
+				&(tv_iters.tag_struct), _("Objects"), ICON_STRUCT,
+				&(tv_iters.tag_function), _("Methods"), ICON_METHOD,
+				&(tv_iters.tag_member), _("Members"), ICON_MEMBER,
+				&(tv_iters.tag_type), _("Type Aliases"), ICON_STRUCT,
+				&(tv_iters.tag_other), _("Other"), ICON_OTHER,
+				NULL);
+			break;
+		}
 		case GEANY_FILETYPES_AS:
 		{
 			tag_list_add_groups(tag_store,
