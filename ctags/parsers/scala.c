@@ -80,7 +80,7 @@ typedef struct {
 *   FUNCTION PROTOTYPES
 */
 
-static void parseBlock (lexerState *lexer, boolean delim, int kind, vString *scope);
+static void parseBlock (lexerState *lexer, boolean delim, ScalaKind topLevelKind, vString *scope);
 
 /*
 *   FUNCTION DEFINITIONS
@@ -177,6 +177,54 @@ static boolean isIdentifierContinue (int c)
 static boolean isPackageChar(int c)
 {
 	return (isAscii(c) && (isalnum(c) || c == '.')) || !isAscii(c);
+}
+
+
+static ScalaKind getKeywordKind(lexerState* lexer)
+{
+	if (lexer->cur_token == TOKEN_IDENT)
+	{
+		if (strcmp(lexer->token_str->buffer, "class") == 0)
+		{
+			return K_CLASS;
+		}
+		else if (strcmp(lexer->token_str->buffer, "def") == 0)
+		{
+			return K_METHOD;
+		}
+		else if (strcmp(lexer->token_str->buffer, "object") == 0)
+		{
+			return K_OBJECT;
+		}
+		else if (strcmp(lexer->token_str->buffer, "trait") == 0)
+		{
+			return K_TRAIT;
+		}
+		else if (strcmp(lexer->token_str->buffer, "val") == 0)
+		{
+			return K_FIELD;
+		}
+		else if (strcmp(lexer->token_str->buffer, "var") == 0)
+		{
+			return K_FIELD;
+		}
+		else if (strcmp(lexer->token_str->buffer, "package") == 0)
+		{
+			return K_PACKAGE;
+		}
+		else if (strcmp(lexer->token_str->buffer, "type") == 0)
+		{
+			return K_TYPE;
+		}
+		else
+		{
+			return K_NONE;
+		}
+	}
+	else
+	{
+		return K_NONE;
+	}
 }
 
 static void scanWhitespace (lexerState *lexer)
@@ -301,7 +349,7 @@ static void scanCharacterOrLifetime (lexerState *lexer)
  * token starts are stored literally, e.g. token may equal to a character '#'. */
 static int advanceToken (lexerState *lexer, boolean skip_whitspace)
 {
-	printf("Advancing token...\n");
+	//printf("Advancing token...\n");
 	boolean have_whitespace = FALSE;
 	lexer->line = getInputLineNumber();
 	lexer->pos = getInputFilePosition();
@@ -388,6 +436,15 @@ static void deInitLexer (lexerState *lexer)
 
 static void addTag (vString* ident, const char* type, const char* arg_list, int kind, unsigned long line, MIOPos pos, vString *scope, int parent_kind)
 {
+	if (parent_kind == K_NONE)
+	{
+		printf("Adding token KIND[%d]: %s\n", kind, ident->buffer);
+	}
+	else
+	{
+		printf("Adding token KIND[%d] >> KIND[%d]: %s\n", parent_kind, kind, ident->buffer);
+	}
+	
 	if (kind == K_NONE)
 		return;
 	tagEntryInfo tag;
@@ -547,68 +604,73 @@ static void skipMacro (lexerState *lexer)
 	advanceToken(lexer, TRUE);
 }
 
-static ScalaKind getTokenKind(lexerState* lexer)
+/* Finds and move to the next occurence of the given character
+ * If a keyword is found before the given character or the 
+ * end of the file is reached, returns false
+ */ 
+static boolean findNext(lexerState* lexer, char toFind)
 {
-	if (lexer->cur_token == TOKEN_IDENT)
+	while (lexer->cur_token != TOKEN_EOF)
 	{
-		if (strcmp(lexer->token_str->buffer, "class") == 0)
+		if (lexer->cur_token == toFind)
 		{
-			return K_CLASS;
+			return TRUE;
 		}
-		else if (strcmp(lexer->token_str->buffer, "def") == 0)
+		else if (getKeywordKind(lexer) != K_NONE)
 		{
-			return K_METHOD;
-		}
-		else if (strcmp(lexer->token_str->buffer, "object") == 0)
-		{
-			return K_OBJECT;
-		}
-		else if (strcmp(lexer->token_str->buffer, "trait") == 0)
-		{
-			return K_TRAIT;
-		}
-		else if (strcmp(lexer->token_str->buffer, "val") == 0)
-		{
-			return K_FIELD;
-		}
-		else if (strcmp(lexer->token_str->buffer, "var") == 0)
-		{
-			return K_FIELD;
-		}
-		else if (strcmp(lexer->token_str->buffer, "package") == 0)
-		{
-			return K_PACKAGE;
-		}
-		else if (strcmp(lexer->token_str->buffer, "type") == 0)
-		{
-			return K_TYPE;
+			return FALSE;
 		}
 		else
 		{
-			return K_NONE;
+			advanceToken(lexer, TRUE);
 		}
 	}
-	else
-	{
-		return K_NONE;
-	}
+	return FALSE;
 }
+
+// As objects, classes and traits are very similar, we parse them the same way
+static void parseClassLike(lexerState* lexer, ScalaKind kind, vString* scope)
+{
+	printf("Parsing class-like of kind %d\n", kind);
+	advanceToken(lexer, TRUE);
+	
+	if (lexer->cur_token != TOKEN_IDENT)
+		return; // error, there should be the class name
+		
+	// add the corresponding tag
+	const vString* const class_name = vStringNewCopy(lexer->token_str);
+	addTag(class_name, NULL, NULL, kind, lexer->line, lexer->pos, scope, K_NONE);
+	//printf("Added tag %s\n", lexer->token_str->buffer);
+	// parse the block of the class like, if any is found
+	// TODO extend the scope and repop it later
+	boolean foundBlock = findNext(lexer, '{');
+	printf("Found block: %d\n", foundBlock);
+	if (foundBlock)
+	{
+		const size_t scope_length = scope->length;
+		addToScope(scope, class_name);
+		parseBlock(lexer, TRUE, kind, scope);
+		resetScope(scope, scope_length);
+	}
+	// else nothing
+}
+
 
 /*
  * Rust is very liberal with nesting, so this function is used pretty much for any block
  */
-static void parseBlock (lexerState *lexer, boolean delim, int kind, vString *scope)
+static void parseBlock (lexerState *lexer, boolean delim, ScalaKind topLevelKind, vString *scope)
 {
-
-	while (lexer->cur_token != TOKEN_EOF)
+	while (lexer->cur_token != TOKEN_EOF
+			&& !(delim && lexer->cur_token == '}'))
 	{
-		printf("Reading token : '%s'\n", lexer->token_str->buffer);
-		ScalaKind tokenKind = getTokenKind(lexer);
+		printf("Reading token : \"%s\" | '%c'\n", lexer->token_str->buffer, lexer->cur_c);
+		ScalaKind tokenKind = getKeywordKind(lexer);
 
 		switch(tokenKind)
 		{
 			case K_NONE:
-				printf("Ignoring token ...\n");
+				//printf("Ignoring token ...\n");
 				// Just ignore
 				advanceToken(lexer, TRUE);
 				break;
@@ -619,13 +681,26 @@ static void parseBlock (lexerState *lexer, boolean delim, int kind, vString *sco
 				if (lexer->token_str->length > 0)
 					addTag(lexer->token_str, NULL, NULL, tokenKind, lexer->line, lexer->pos, scope, K_NONE);
 				break;
+				
+			case K_CLASS:
+			case K_TRAIT:
+			case K_OBJECT:
+				parseClassLike(lexer, tokenKind, scope);
+				break;
 
 			default:
 				// all the other cases are the same
 				advanceToken(lexer, TRUE);
 				if (lexer->cur_token == TOKEN_IDENT)
-				// otherwise it is an error, so we add no tag at all
-					addTag(lexer->token_str, NULL, NULL, tokenKind, lexer->line, lexer->pos, scope, K_NONE);
+				{
+					addTag(lexer->token_str, NULL, NULL, tokenKind, lexer->line, lexer->pos, scope, topLevelKind);
+				}
+				else
+				{
+					if (topLevelKind != K_NONE)
+						return;
+					// if it is K_NONE, we don't stop parsing
+				}
 				break;
 
 		}
@@ -680,3 +755,5 @@ extern parserDefinition *ScalaParser (void)
 // TODO handle operators (any sequence of non-space, non-identifier character): http://stackoverflow.com/questions/7656937/valid-identifier-characters-in-scala
 // TODO handle `'identifier` case (why do people even do that ?)
 // TODO better package reading (take into account the '.')
+// TODO handle `class A(val a, val b) { }`
+// TODO handle parenthesis and sub-blocks
