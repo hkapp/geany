@@ -83,6 +83,37 @@ typedef struct {
 static void parseBlock (lexerState *lexer, boolean delim, ScalaKind topLevelKind, vString *scope);
 
 /*
+ *  DEBUG
+ */
+
+static void printCurrentToken(lexerState* lexer)
+{
+	switch(lexer->cur_token)
+	{
+		case TOKEN_WHITESPACE:
+		case TOKEN_STRING:
+		case TOKEN_IDENT:
+			printf("%s", lexer->token_str->buffer);
+			break;
+		case TOKEN_LSHIFT:
+			printf("<<");
+			break;
+		case TOKEN_RSHIFT:
+			printf(">>");
+			break;
+		case TOKEN_RARROW:
+			printf("->");
+			break;
+		case TOKEN_EOF:
+			printf("#!EOF#!");
+			break;
+		default:
+			printf("%c", lexer->cur_token);
+			break;
+	}
+}
+
+/*
 *   FUNCTION DEFINITIONS
 */
 
@@ -99,34 +130,6 @@ static void addToScope (vString *scope, vString *name)
 	if (vStringLength(scope) > 0)
 		vStringCatS(scope, "::");
 	vStringCat(scope, name);
-}
-
-/* Write the lexer's current token to string, taking care of special tokens */
-static void writeCurTokenToStr (lexerState *lexer, vString *out_str)
-{
-	switch (lexer->cur_token)
-	{
-		case TOKEN_IDENT:
-			vStringCat(out_str, lexer->token_str);
-			break;
-		case TOKEN_STRING:
-			vStringCat(out_str, lexer->token_str);
-			break;
-		case TOKEN_WHITESPACE:
-			vStringPut(out_str, ' ');
-			break;
-		case TOKEN_LSHIFT:
-			vStringCatS(out_str, "<<");
-			break;
-		case TOKEN_RSHIFT:
-			vStringCatS(out_str, ">>");
-			break;
-		case TOKEN_RARROW:
-			vStringCatS(out_str, "->");
-			break;
-		default:
-			vStringPut(out_str, (char) lexer->cur_token);
-	}
 }
 
 /* Reads a character from the file */
@@ -179,6 +182,23 @@ static boolean isPackageChar(int c)
 	return (isAscii(c) && (isalnum(c) || c == '.')) || !isAscii(c);
 }
 
+static boolean isOpeningBracket(char c)
+{
+	return (c == '(' || c == '{');
+}
+
+static char closingBracketFor(char c)
+{
+	switch(c)
+	{
+		case '(':
+			return ')';
+		case '{':
+			return '}';
+		default:
+			return c;
+	}
+}
 
 static ScalaKind getKeywordKind(lexerState* lexer)
 {
@@ -347,8 +367,9 @@ static void scanCharacterOrLifetime (lexerState *lexer)
  * (otherwise it is concatenated and returned as a single whitespace token).
  * Whitespace is needed to properly render function signatures. Unrecognized
  * token starts are stored literally, e.g. token may equal to a character '#'. */
-static int advanceToken (lexerState *lexer, boolean skip_whitspace)
+static int advanceToken (lexerState *lexer)
 {
+	const boolean skip_whitspace = TRUE;
 	//printf("Advancing token...\n");
 	boolean have_whitespace = FALSE;
 	lexer->line = getInputLineNumber();
@@ -425,7 +446,7 @@ static void initLexer (lexerState *lexer)
 
 	if (lexer->cur_c == '#' && lexer->next_c == '!')
 		scanComments(lexer);
-	advanceToken(lexer, TRUE);
+	advanceToken(lexer);
 }
 
 static void deInitLexer (lexerState *lexer)
@@ -444,7 +465,7 @@ static void addTag (vString* ident, const char* type, const char* arg_list, int 
 	{
 		printf("Adding token KIND[%d] >> KIND[%d]: %s\n", parent_kind, kind, ident->buffer);
 	}
-	
+
 	if (kind == K_NONE)
 		return;
 	tagEntryInfo tag;
@@ -526,89 +547,42 @@ static void skipUntil (lexerState *lexer, int goal_tokens[], int num_goal_tokens
 		if (num_goal_tokens == 0 && angle_level == 0 && paren_level == 0 && brace_level == 0
 		    && bracket_level == 0)
 			break;
-		advanceToken(lexer, TRUE);
+		advanceToken(lexer);
 	}
 }
 
-/* Skips type blocks of the form <T:T<T>, ...> */
-static void skipTypeBlock (lexerState *lexer)
+/* tokens: { ... } x
+ *         ^       ^
+ *         in     out
+ */
+static void skipBlock(lexerState* lexer)
 {
-	if (lexer->cur_token == '<')
+	char closing_bracket = closingBracketFor(lexer->cur_token);
+	printf("<");
+	printCurrentToken(lexer);
+	advanceToken(lexer);
+	while(lexer->cur_token != EOF && lexer->cur_token != closing_bracket)
 	{
-		skipUntil(lexer, NULL, 0);
-		advanceToken(lexer, TRUE);
-	}
-}
-
-/* Essentially grabs the last ident before 'for', '<' and '{', which
- * tends to correspond to what we want as the impl tag entry name */
-static void parseQualifiedType (lexerState *lexer, vString* name)
-{
-	while (lexer->cur_token != TOKEN_EOF)
-	{
-		if (lexer->cur_token == TOKEN_IDENT)
+		printCurrentToken(lexer);
+		printf(", ");
+		if (isOpeningBracket(lexer->cur_token))
 		{
-			if (strcmp(lexer->token_str->buffer, "for") == 0
-				|| strcmp(lexer->token_str->buffer, "where") == 0)
-				break;
-			vStringClear(name);
-			vStringCat(name, lexer->token_str);
+			skipBlock(lexer);
 		}
-		else if (lexer->cur_token == '<' || lexer->cur_token == '{')
+		else
 		{
-			break;
+			advanceToken(lexer);
 		}
-		advanceToken(lexer, TRUE);
 	}
-	skipTypeBlock(lexer);
-}
-
-/* Skip the body of the macro. Can't use skipUntil here as
- * the body of the macro may have arbitrary code which confuses it (e.g.
- * bitshift operators/function return arrows) */
-static void skipMacro (lexerState *lexer)
-{
-	int level = 0;
-	int plus_token = 0;
-	int minus_token = 0;
-
-	advanceToken(lexer, TRUE);
-	switch (lexer->cur_token)
-	{
-		case '(':
-			plus_token = '(';
-			minus_token = ')';
-			break;
-		case '{':
-			plus_token = '{';
-			minus_token = '}';
-			break;
-		case '[':
-			plus_token = '[';
-			minus_token = ']';
-			break;
-		default:
-			return;
-	}
-
-	while (lexer->cur_token != TOKEN_EOF)
-	{
-		if (lexer->cur_token == plus_token)
-			level++;
-		else if (lexer->cur_token == minus_token)
-			level--;
-		if (level == 0)
-			break;
-		advanceToken(lexer, TRUE);
-	}
-	advanceToken(lexer, TRUE);
+	printf("%c>\n", lexer->cur_token);
+	advanceToken(lexer);
 }
 
 /* Finds and move to the next occurence of the given character
- * If a keyword is found before the given character or the 
+ * If a keyword is found before the given character or the
  * end of the file is reached, returns false
- */ 
-static boolean findNext(lexerState* lexer, char toFind)
+ */
+static boolean findNext(lexerState* lexer, int toFind)
 {
 	while (lexer->cur_token != TOKEN_EOF)
 	{
@@ -622,37 +596,112 @@ static boolean findNext(lexerState* lexer, char toFind)
 		}
 		else
 		{
-			advanceToken(lexer, TRUE);
+			advanceToken(lexer);
 		}
 	}
 	return FALSE;
 }
 
-// As objects, classes and traits are very similar, we parse them the same way
+static boolean findArgList(lexerState* lexer)
+{
+	while (lexer->cur_token != TOKEN_EOF)
+	{
+		if (lexer->cur_token == '(')
+		{
+			return TRUE;
+		}
+		else if (getKeywordKind(lexer) != K_NONE || lexer->cur_token == '{')
+		{
+			return FALSE;
+		}
+		else
+		{
+			advanceToken(lexer);
+		}
+	}
+	return FALSE;
+}
+
+static void parseArgList(lexerState* lexer, const ScalaKind top_level_kind, vString* scope)
+{
+	advanceToken(lexer);  // skip the opening '('
+	while(lexer->cur_token != TOKEN_EOF && lexer->cur_token != ')')
+	{
+		// parse the argument
+		// skip val or var token
+		if (getKeywordKind(lexer) == K_FIELD)
+		{
+			advanceToken(lexer);
+		}
+
+		if (lexer->cur_token == TOKEN_IDENT)
+		{
+			addTag(lexer->token_str, NULL, NULL, K_FIELD, lexer->line, lexer->pos, scope, top_level_kind);
+		}
+		else
+		{
+			return;
+		}
+
+		// find the next one
+		while (lexer->cur_token != TOKEN_EOF && lexer->cur_token != ',' && lexer->cur_token != ')')
+		{
+			if (isOpeningBracket(lexer->cur_token))
+			{
+				skipBlock(lexer);
+			}
+			else
+			{
+				advanceToken(lexer);
+			}
+		}
+		if (lexer->cur_token == ',')
+			advanceToken(lexer);
+	}
+}
+
+/* As objects, classes and traits are very similar, we parse them the same way
+ * class A (argList) ... { body }
+ * ^^^^^                        ^
+ *  in                         out
+ */
 static void parseClassLike(lexerState* lexer, ScalaKind kind, vString* scope)
 {
 	printf("Parsing class-like of kind %d\n", kind);
-	advanceToken(lexer, TRUE);
-	
+	advanceToken(lexer);
+
 	if (lexer->cur_token != TOKEN_IDENT)
 		return; // error, there should be the class name
-		
+
 	// add the corresponding tag
-	const vString* const class_name = vStringNewCopy(lexer->token_str);
+	vString* class_name = vStringNewCopy(lexer->token_str);
 	addTag(class_name, NULL, NULL, kind, lexer->line, lexer->pos, scope, K_NONE);
-	//printf("Added tag %s\n", lexer->token_str->buffer);
+
+	const size_t scope_length = scope->length;
+	addToScope(scope, class_name);
+
+	// parse the argument list, if any is found
+	// TODO there may be more than one argList: class AB (a:a)(implicit b:B)
+	boolean foundArgList = findArgList(lexer);
+	if (foundArgList)
+	{
+		//advanceChar(lexer);
+		//advanceToken(lexer); // we need to skip the first '{' and enter the block
+		parseArgList(lexer, kind, scope);
+	}
+
 	// parse the block of the class like, if any is found
-	// TODO extend the scope and repop it later
 	boolean foundBlock = findNext(lexer, '{');
 	printf("Found block: %d\n", foundBlock);
 	if (foundBlock)
 	{
-		const size_t scope_length = scope->length;
-		addToScope(scope, class_name);
+		//advanceChar(lexer);
+		advanceToken(lexer); // we need to skip the first '{' and enter the block
 		parseBlock(lexer, TRUE, kind, scope);
-		resetScope(scope, scope_length);
 	}
 	// else nothing
+
+	resetScope(scope, scope_length);
 }
 
 
@@ -665,56 +714,67 @@ static void parseBlock (lexerState *lexer, boolean delim, ScalaKind topLevelKind
 			&& !(delim && lexer->cur_token == '}'))
 	{
 		printf("Reading token : \"%s\" | '%c'\n", lexer->token_str->buffer, lexer->cur_c);
-		ScalaKind tokenKind = getKeywordKind(lexer);
 
-		switch(tokenKind)
+		if (isOpeningBracket(lexer->cur_token))
 		{
-			case K_NONE:
-				//printf("Ignoring token ...\n");
-				// Just ignore
-				advanceToken(lexer, TRUE);
-				break;
+			// we skip sub-blocks
+			printf("Skipping block that starts with %c\n", lexer->cur_token);
+			skipBlock(lexer);
+			//advanceToken(lexer);
+		}
+		else
+		{
+			ScalaKind tokenKind = getKeywordKind(lexer);
 
-			case K_PACKAGE:
-				scanWhitespace(lexer);
-				scanPackageName(lexer);
-				if (lexer->token_str->length > 0)
-					addTag(lexer->token_str, NULL, NULL, tokenKind, lexer->line, lexer->pos, scope, K_NONE);
-				break;
-				
-			case K_CLASS:
-			case K_TRAIT:
-			case K_OBJECT:
-				parseClassLike(lexer, tokenKind, scope);
-				break;
+			switch(tokenKind)
+			{
+				case K_NONE:
+					//printf("Ignoring token ...\n");
+					// Just ignore
+					advanceToken(lexer);
+					break;
 
-			default:
-				// all the other cases are the same
-				advanceToken(lexer, TRUE);
-				if (lexer->cur_token == TOKEN_IDENT)
-				{
-					addTag(lexer->token_str, NULL, NULL, tokenKind, lexer->line, lexer->pos, scope, topLevelKind);
-				}
-				else
-				{
-					if (topLevelKind != K_NONE)
-						return;
-					// if it is K_NONE, we don't stop parsing
-				}
-				break;
+				case K_PACKAGE:
+					scanWhitespace(lexer);
+					scanPackageName(lexer);
+					if (lexer->token_str->length > 0)
+						addTag(lexer->token_str, NULL, NULL, tokenKind, lexer->line, lexer->pos, scope, K_NONE);
+					break;
 
+				case K_CLASS:
+				case K_TRAIT:
+				case K_OBJECT:
+					parseClassLike(lexer, tokenKind, scope);
+					break;
+
+				default:
+					// all the other cases are the same
+					advanceToken(lexer);
+					if (lexer->cur_token == TOKEN_IDENT)
+					{
+						addTag(lexer->token_str, NULL, NULL, tokenKind, lexer->line, lexer->pos, scope, topLevelKind);
+					}
+					else
+					{
+						if (topLevelKind != K_NONE)
+							return;
+						// if it is K_NONE, we don't stop parsing
+					}
+					break;
+
+			}
 		}
 
 		/*if (tokenKind == K_NONE)
 		{
 			printf("Ignoring token ...\n");
 			// Just ignore
-			advanceToken(lexer, TRUE);
+			advanceToken(lexer);
 		}
 		else
 		{
 			// Token has been recognized
-			advanceToken(lexer, TRUE);
+			advanceToken(lexer);
 
 			//if (lexer->cur_token != TOKEN_IDENT)
 				//return;
@@ -757,3 +817,4 @@ extern parserDefinition *ScalaParser (void)
 // TODO better package reading (take into account the '.')
 // TODO handle `class A(val a, val b) { }`
 // TODO handle parenthesis and sub-blocks
+// TODO set '[' as bracket
